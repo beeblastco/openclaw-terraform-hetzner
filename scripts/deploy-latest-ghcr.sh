@@ -39,20 +39,79 @@ if [[ -n "$SSH_KEY_PATH" ]]; then
     SCP_CMD+=(-i "$SSH_KEY_PATH")
 fi
 
+resolve_vps_ip_from_terraform() {
+    if ! command -v terraform >/dev/null 2>&1 || [[ ! -d "$TERRAFORM_DIR" ]]; then
+        return 1
+    fi
+
+    local terraform_json parsed
+    terraform_json="$(cd "$TERRAFORM_DIR" && terraform output -json 2>/dev/null || true)"
+    if [[ -z "$terraform_json" || "$terraform_json" == "{}" ]]; then
+        return 1
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        parsed="$(printf '%s' "$terraform_json" | jq -r '.server_ip.value // .server_ip // empty' 2>/dev/null || true)"
+    else
+        parsed="$(
+            printf '%s' "$terraform_json" | python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+value = data.get("server_ip", "")
+if isinstance(value, dict):
+    print(value.get("value", ""))
+else:
+    print(value or "")
+' 2>/dev/null || true
+        )"
+    fi
+
+    parsed="$(printf '%s' "$parsed" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [[ -z "$parsed" ]]; then
+        return 1
+    fi
+    printf '%s' "$parsed"
+}
+
+validate_vps_host() {
+    local host="$1"
+    if [[ -z "$host" ]]; then
+        return 1
+    fi
+    if [[ "$host" =~ [[:space:]] ]]; then
+        return 1
+    fi
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+}
+
 if [[ -n "${1:-}" ]]; then
     VPS_IP="$1"
 else
-    if command -v terraform >/dev/null 2>&1 && [[ -d "$TERRAFORM_DIR/.terraform" ]]; then
-        VPS_IP="$(cd "$TERRAFORM_DIR" && terraform output -raw server_ip 2>/dev/null)" || {
-            echo "Error: Could not get VPS IP from terraform output."
-            echo "Usage: $0 <VPS_IP>"
-            exit 1
-        }
-    else
-        echo "Error: No VPS IP provided and terraform not available."
-        echo "Usage: $0 <VPS_IP>"
+    VPS_IP="$(resolve_vps_ip_from_terraform || true)"
+    if [[ -z "$VPS_IP" ]]; then
+        echo "Error: Could not resolve server IP from Terraform outputs."
+        echo "Run with explicit IP:"
+        echo "  $0 <VPS_IP>"
+        echo "or:"
+        echo "  make deploy-latest SERVER_IP=<VPS_IP>"
         exit 1
     fi
+fi
+
+if ! validate_vps_host "$VPS_IP"; then
+    echo "Error: Invalid VPS host/IP resolved: '$VPS_IP'"
+    echo "Run with explicit IP:"
+    echo "  $0 <VPS_IP>"
+    echo "or:"
+    echo "  make deploy-latest SERVER_IP=<VPS_IP>"
+    exit 1
 fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
