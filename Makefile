@@ -5,8 +5,7 @@
 
 SHELL := /bin/bash
 .PHONY: init plan apply destroy ssh ssh-root tunnel output ip fmt validate clean help \
-        bootstrap deploy push-env push-config setup-auth backup-now restore logs status \
-        tailscale-status tailscale-ip tailscale-up tailscale-serve \
+        bootstrap deploy deploy-latest push-env push-config setup-auth backup-now restore logs status \
         workspace-sync
 
 # Default target
@@ -16,8 +15,8 @@ SHELL := /bin/bash
 ENV ?= prod
 TERRAFORM_DIR := infra/terraform/envs/$(ENV)
 
-# Server IP - can be overridden or read from Terraform
-SERVER_IP ?= $(shell cd $(TERRAFORM_DIR) && terraform output -raw server_ip 2>/dev/null)
+# Server IP - can be overridden or read from Terraform JSON output
+SERVER_IP ?= $(shell cd $(TERRAFORM_DIR) && terraform output -json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("server_ip",""); print(v.get("value","") if isinstance(v,dict) else (v or ""))' 2>/dev/null || true)
 
 # Colors
 GREEN  := \033[0;32m
@@ -101,6 +100,10 @@ deploy: ## Pull latest image and restart container on the VPS
 	@echo -e "$(BLUE)[DEPLOY]$(NC) Deploying latest image to VPS..."
 	@./deploy/deploy.sh $(SERVER_IP)
 
+deploy-latest: ## Sync .env+compose and deploy latest GHCR image (no local config SCP)
+	@echo -e "$(BLUE)[DEPLOY]$(NC) Deploying latest GHCR image with image-synced config..."
+	@./scripts/deploy-latest-ghcr.sh $(if $(strip $(SERVER_IP)),$(SERVER_IP),)
+
 push-env: ## Push secrets/openclaw.env to the VPS
 	@echo -e "$(BLUE)[DEPLOY]$(NC) Pushing secrets to VPS..."
 	@./scripts/push-env.sh $(SERVER_IP)
@@ -181,6 +184,7 @@ help: ## Show this help message
 	@echo -e "$(BOLD)Deploy:$(NC)"
 	@echo -e "  $(BLUE)bootstrap$(NC)       Bootstrap OpenClaw on the VPS (run once)"
 	@echo -e "  $(BLUE)deploy$(NC)          Pull latest image and restart container"
+	@echo -e "  $(BLUE)deploy-latest$(NC)   Sync .env+compose and deploy latest GHCR image"
 	@echo -e "  $(BLUE)push-env$(NC)        Push secrets/openclaw.env to the VPS"
 	@echo -e "  $(BLUE)push-config$(NC)     Push config files to the VPS"
 	@echo -e "  $(BLUE)setup-auth$(NC)      Set up Claude subscription auth"
